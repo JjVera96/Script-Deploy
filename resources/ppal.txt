@@ -1,0 +1,157 @@
+#Hacemos el update y upgrade del sistema
+sudo apt update
+sudo apt upgrade
+
+#Instalamos primero que todo Python y demas dependencias necesarias en este caso python3 y postgres
+sudo apt install python3-pip python3-dev python3-venv libpq-dev postgresql postgresql-contrib nginx curl
+
+#Crear un grupo WEBAPPS para las aplicaciones web
+sudo groupadd webapps
+
+#Vamos al directorio raiz y creamos la carpeta WEBAPPS y dentro de esta, creamos otra carpeta que es el DIR principal del usuario creado
+cd / && mkdir webapps && cd webapps
+mkdir DIR
+
+#Crear un usuario USER de sistema que pertenezca al grupo webapps y que su directorio principal sea DIR
+sudo useradd --system --gid webapps --shell /bin/bash --home /webapps/DIR USER
+
+#Brindamos los permisos de la carpeta DIR al usuario y al grupo del usuario
+chown USER /webapps/DIR
+chgrp webapps /webapps/DIR
+
+#Entramos al usuario del sistema para empezar el despligue
+su - USER
+
+#Descargamos el proyecto del repositorio y lo descargamos como app
+git clone .... app
+
+#Creamos el entorno virtual del proyecto
+python3 -m venv venv
+
+#Activamos el entorno virtual
+. venv/bin/activate
+
+#Ahora instalamos todos los requerimientos de nuestra aplicaciones
+cd app
+pip install -r requirements.txt
+
+#Miramos si corre nuestro servidor Django para comprobrar errores, si salen, arreglarlos
+python manage.py runserver
+
+#Instalamos gunicorn si no esta en los requerimientos
+pip install gunicorn
+
+#Vamos a la carpeta del entorno virtual
+cd ../venv
+
+#Creamos una carpeta run, en la cual estara nuestro archivo de socket, con el cual se comunicará nuestra aplicacion
+mkdir run
+
+#Vamos a bin y creamos un archivo gunicorn_start para ejecutar el servidor de Django
+------------------------------------------------------------------------
+#!/bin/bash
+#Basik-Dev
+
+NAME="nextpay-prod"
+DJANGODIR=/webapps/nxapp-prod/app
+SOCKFILE=/webapps/nxapp-prod/venv/run/gunicorn.sock
+USER=nxuser-prod
+GROUP=webapps
+NUM_WORKERS=3
+DJANGO_SETTINGS_MODULE=gettingstarted.settings
+DJANGO_WSGI_MODULE=gettingstarted.wsgi
+
+echo "Starting $NAME as `whoami`"
+
+# Activate the virtualenv
+cd $DJANGODIR
+source ../venv/bin/activate
+export DJANGO_SETTINGS_MODULE=$DJANGO_SETTINGS_MODULE
+export PYTHONPATH=$DJANGODIR:$PYTHONPATH
+
+# Create the run directory if it doestn't exist
+RUNDIR=$(dirname $SOCKFILE) test -d $RUNDIR || mkdir -p $RUNDIR
+
+# Start your Django Unicorn Programs meant to be run under supervisor should not daemonize themselves (don't use --daemon)
+exec ../venv/bin/gunicorn ${DJANGO_WSGI_MODULE}:application \
+--name $NAME \
+--workers $NUM_WORKERS \
+--user=$USER --group=$GROUP \
+--bin=unix:$SOCKFILE \
+--log-level=debug \
+--log-file=-
+--------------------------------------------------------------------
+
+#Verificamos que corra nuestro servidor
+. gunicorn_start
+
+#Le damos permisos de ejecucion a este archivo
+chmod +x gunicorn_start
+
+#Salimos del usuario del sistema y entramos a root
+exit
+
+#Instalamos supervisor y Verificamos que este corriendo con restart
+apt-get install supervisor
+service supervisor restart
+
+#Creamos un archivo que nos correra el gunicorn_start
+#ruta /etc/supervisor/conf SERVERNAMEprod-daemon
+[program:SERVERNAMEprod-daemon]
+command=/webapps/DIR/venv/bin/gunicorn_start
+user=USER
+stdout_logfile=/webapps/DIR/logs/supervisor.log
+autostart=true
+autorestart=true
+redirect_stderr=true
+environment=LANG=en_US.UTF-8,LC_ALL=en_US.UTF-8
+
+#Recargamos el supervisor para que lea los cambios
+supervisorctl reread
+supervisorctl update
+
+#Creamos el archivo para darle disponibilidad en el Nginx
+/etc/nginx/sites-available SERVERNAME.conf
+server {
+    server_name SERVERNAME.com www.SERVERNAME.com IP;
+
+    location = /favicon.ico { access_log off; log_not_found off; }
+    location /static/ {
+        root /webapps/DIR/app;
+    }
+
+    location / {
+        include proxy_params;
+        proxy_pass http://unix:/webapps/DIR/venv/run/gunicorn.sock;
+    }
+}
+
+#Creamos un enlace directo en los sitios habilidatos
+sudo ln -s /etc/nginx/sites-available/SERVERNAME.conf /etc/nginx/sites-enabled
+
+#Verificamos sintaxis y reiniciamos el nginx
+nginx -t
+sudo systemctl restart nginx
+
+#Abrimos los puertos del nginx para la comunicacion
+sudo ufw allow 'Nginx Full'
+
+#Para habilitar los certificados SSL (Opcional) instalamos Cerbot
+sudo add-apt-repository ppa:certbot/certbot
+sudo apt install python-certbot-nginx
+
+#Verificamos nuestro sitio
+sudo certbot --nginx -d SERVERNAME.com -d www.SERVERNAME.com
+
+#Damos enter enter hasta que nos sale algo parecido a esto
+Please choose whether or not to redirect HTTP traffic to HTTPS, removing HTTP access.
+-------------------------------------------------------------------------------
+1: No redirect - Make no further changes to the webserver configuration.
+2: Redirect - Make all requests redirect to secure HTTPS access. Choose this for
+new sites, or if you're confident your site works on HTTPS. You can undo this
+change by editing your web server's configuration.
+-------------------------------------------------------------------------------
+Select the appropriate number [1-2] then [enter] (press 'c' to cancel):
+Select the appropriate number [1-2] then [enter] (press 'c' to cancel):
+
+#Escoger la mas acorde al sitio, como es nuevo podemos elegir la 2
